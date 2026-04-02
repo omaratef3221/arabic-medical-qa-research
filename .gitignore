@@ -1,0 +1,4 @@
+Files/datasets/.DS_Store
+*.csv
+*.pyc
+*__pycache__
