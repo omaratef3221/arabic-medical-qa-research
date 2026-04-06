@@ -2,3 +2,12 @@ Files/datasets/.DS_Store
 *.csv
 *.pyc
 *__pycache__
+
+# Credentials — never commit
+.env
+
+# Model outputs
+outputs/
+
+# Wandb local files
+wandb/
