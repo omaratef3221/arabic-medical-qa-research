@@ -129,7 +129,7 @@ def run_domain_adaptation(
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "epoch"),
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         seed=train_cfg.get("seed", 42),
         optim=train_cfg.get("optimizer", "adamw_torch"),
         max_seq_length=max_seq_length,
