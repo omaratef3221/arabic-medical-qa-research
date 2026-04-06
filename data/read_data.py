@@ -1,6 +1,32 @@
+import csv
 import os
 import pandas as pd
 from datasets import Dataset
+
+
+def _read_csv_robust(path: str) -> pd.DataFrame:
+    """
+    Read a CSV file tolerantly, handling:
+      - Unterminated quoted strings (common in Arabic medical text with stray quotes)
+      - Embedded newlines inside cells
+      - Encoding issues
+
+    Strategy: try the fast C engine first; on parse error fall back to the
+    Python engine with quoting=QUOTE_NONE so stray quotes are treated as
+    ordinary characters and bad lines are skipped rather than crashing.
+    """
+    try:
+        return pd.read_csv(path, low_memory=False)
+    except pd.errors.ParserError:
+        print(f"  [read_csv] C engine failed on {path}, retrying with Python engine (quoting=QUOTE_NONE)...")
+        return pd.read_csv(
+            path,
+            engine="python",
+            quoting=csv.QUOTE_NONE,
+            on_bad_lines="skip",
+            encoding="utf-8",
+            encoding_errors="replace",
+        )
 
 
 def load_aramed(split="train", data_dir="Files/datasets/"):
@@ -15,7 +41,7 @@ def load_aramed(split="train", data_dir="Files/datasets/"):
     """
     filename = "Train.csv" if split == "train" else "Test.csv"
     path = os.path.join(data_dir, "AraMed", filename)
-    df = pd.read_csv(path)
+    df = _read_csv_robust(path)
 
     # Build question: prefer description, fall back to title
     df["question"] = df["Question description"].fillna(df["Question title"]).fillna("").str.strip()
@@ -42,7 +68,7 @@ def load_medarabench(split="train", data_dir="Files/datasets/"):
     """
     filename = "Train.csv" if split == "train" else "Test.csv"
     path = os.path.join(data_dir, "MedAraBench", filename)
-    df = pd.read_csv(path)
+    df = _read_csv_robust(path)
 
     # Keep only relevant columns
     keep_cols = [
