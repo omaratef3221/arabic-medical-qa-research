@@ -36,7 +36,13 @@ from utils import wandb_logger
 
 def _load_config(config_path: str) -> dict:
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    # PyYAML parses scientific notation (e.g. 2e-4) as strings — cast floats explicitly
+    train = cfg.get("training", {})
+    for key in ("learning_rate", "warmup_ratio", "weight_decay"):
+        if key in train:
+            train[key] = float(train[key])
+    return cfg
 
 
 class _ValLossCallback(TrainerCallback):
@@ -67,6 +73,9 @@ def run_task_finetuning(
     hf_token: str | None = None,
     hf_private: bool = False,
     val_split: float = 0.05,
+    max_train_samples: int | None = None,
+    max_eval_samples: int | None = None,
+    dry_run: bool = False,
 ):
     """
     Run Stage 2 task-specific fine-tuning on MedAraBench.
@@ -84,12 +93,16 @@ def run_task_finetuning(
                            If None and HF_TOKEN env var is unset, upload is skipped.
         hf_private:        whether the HF repo should be private
         val_split:         fraction of cleaned training data held out for val loss
+        max_train_samples: cap training set size (for dry-run / smoke tests)
+        max_eval_samples:  cap validation set size (for dry-run / smoke tests)
+        dry_run:           if True: force 1 epoch, fp32, skip HF upload
     """
     cfg = _load_config(config_path)
     train_cfg = cfg["training"]
-    num_epochs = cfg["stages"]["task_specific"]["num_train_epochs"]
+    num_epochs = 1 if dry_run else cfg["stages"]["task_specific"]["num_train_epochs"]
     max_seq_length = train_cfg.get("max_seq_length", 2048)
     lora_cfg = cfg.get("lora", {})
+    use_bf16 = train_cfg.get("bf16", True) and not dry_run
 
     transformers.set_seed(train_cfg.get("seed", 42))
 
@@ -164,10 +177,16 @@ def run_task_finetuning(
     split = clean_dataset.train_test_split(test_size=val_split, seed=train_cfg.get("seed", 42))
     train_dataset = split["train"]
     eval_dataset = split["test"]
+
+    if max_train_samples is not None:
+        train_dataset = train_dataset.select(range(min(max_train_samples, len(train_dataset))))
+    if max_eval_samples is not None:
+        eval_dataset = eval_dataset.select(range(min(max_eval_samples, len(eval_dataset))))
+
     print(f"  Train: {len(train_dataset):,}  |  Val: {len(eval_dataset):,}")
 
     def formatting_func(sample):
-        return [format_medarabench_sample(s, include_answer=True) for s in sample]
+        return format_medarabench_sample(sample, include_answer=True)
 
     # ------------------------------------------------------------------ #
     # SFTConfig
@@ -181,17 +200,17 @@ def run_task_finetuning(
         lr_scheduler_type=train_cfg.get("lr_scheduler_type", "cosine"),
         warmup_ratio=train_cfg.get("warmup_ratio", 0.03),
         weight_decay=train_cfg.get("weight_decay", 0.0),
-        bf16=train_cfg.get("bf16", True),
+        bf16=use_bf16,
         gradient_checkpointing=train_cfg.get("gradient_checkpointing", True),
         logging_steps=train_cfg.get("logging_steps", 50),
         save_strategy=train_cfg.get("save_strategy", "epoch"),
         eval_strategy="epoch",
         seed=train_cfg.get("seed", 42),
         optim=train_cfg.get("optimizer", "adamw_torch"),
-        max_seq_length=max_seq_length,
+        max_length=max_seq_length,
+        packing=False,
         report_to="wandb",
         run_name=None,
-        packing=False,
     )
 
     trainer = SFTTrainer(
@@ -200,7 +219,7 @@ def run_task_finetuning(
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         formatting_func=formatting_func,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         callbacks=[_ValLossCallback(stage="stage2")],
     )
 
@@ -236,7 +255,7 @@ def run_task_finetuning(
     # ------------------------------------------------------------------ #
     hf_repo_id = None
     resolved_token = hf_token or os.environ.get("HF_TOKEN")
-    if resolved_token:
+    if resolved_token and not dry_run:
         from utils.hf_hub import upload_checkpoint_to_hub
         hf_repo_id = upload_checkpoint_to_hub(
             checkpoint_dir=output_dir,

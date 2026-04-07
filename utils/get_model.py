@@ -73,7 +73,7 @@ def load_model_and_tokenizer(
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )
@@ -137,7 +137,7 @@ def load_from_checkpoint(
         else:
             base = AutoModelForCausalLM.from_pretrained(
                 base_model_name,
-                torch_dtype=torch.bfloat16,
+                dtype=torch.bfloat16,
                 device_map="auto",
                 trust_remote_code=True,
             )
@@ -145,7 +145,7 @@ def load_from_checkpoint(
     elif method == "full":
         model = AutoModelForCausalLM.from_pretrained(
             checkpoint_path,
-            torch_dtype=torch.bfloat16,
+            dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
         )

@@ -205,22 +205,26 @@ def run_evaluation(
     output_dir: str,
     batch_size: int = 16,
     data_dir: str = "Files/datasets/",
+    max_samples: int | None = None,
 ):
     """
     Convenience wrapper: loads the MedAraBench test set and evaluates.
 
     Args:
-        model:      loaded causal LM (merged if LoRA, ready for inference)
-        tokenizer:  corresponding tokenizer
-        output_dir: directory to write eval results
-        batch_size: inference batch size
-        data_dir:   dataset root
+        model:       loaded causal LM (merged if LoRA, ready for inference)
+        tokenizer:   corresponding tokenizer
+        output_dir:  directory to write eval results
+        batch_size:  inference batch size
+        data_dir:    dataset root
+        max_samples: cap test set size (for dry-run / smoke tests)
 
     Returns:
         dict with evaluation metrics
     """
     print("Loading MedAraBench test set...")
     test_dataset = load_medarabench(split="test", data_dir=data_dir)
+    if max_samples is not None:
+        test_dataset = test_dataset.select(range(min(max_samples, len(test_dataset))))
     print(f"  Loaded {len(test_dataset):,} test samples")
 
     return evaluate_model(

@@ -92,6 +92,17 @@ def parse_args():
         help="Make HF Hub repos private. "
              "Upload is automatic when HF_TOKEN is set in .env or environment.")
 
+    # Dry-run / local testing
+    parser.add_argument("--max_train_samples", type=int, default=None,
+        help="Truncate training data to this many samples. "
+             "Use for quick smoke-tests on CPU/MPS (e.g. --max_train_samples 100).")
+    parser.add_argument("--max_eval_samples", type=int, default=None,
+        help="Truncate validation/test data to this many samples.")
+    parser.add_argument("--dry_run", action="store_true",
+        help="Shorthand for a 1-epoch, fp32, 100-sample smoke test on CPU/MPS. "
+             "Automatically sets --max_train_samples 100 --max_eval_samples 50 "
+             "--no_wandb and disables bf16/HF upload.")
+
     return parser.parse_args()
 
 
@@ -100,7 +111,14 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(args.output_dir, exist_ok=True)
 
-    load_in_4bit = _is_70b(args.model)
+    # --dry_run applies safe defaults for local CPU/MPS smoke-testing
+    if args.dry_run:
+        args.max_train_samples = args.max_train_samples or 100
+        args.max_eval_samples = args.max_eval_samples or 50
+        args.no_wandb = True
+        print("Dry-run mode: max_train_samples=100, max_eval_samples=50, W&B disabled, bf16 disabled, 1 epoch")
+
+    load_in_4bit = _is_70b(args.model) and not args.dry_run
 
     # ------------------------------------------------------------------
     # Resolve credentials from env (already loaded from .env)
@@ -204,6 +222,9 @@ def main():
             load_in_4bit=load_in_4bit,
             hf_token=hf_token,
             hf_private=args.hf_private,
+            max_train_samples=args.max_train_samples,
+            max_eval_samples=args.max_eval_samples,
+            dry_run=args.dry_run,
         )
 
         gc.collect()
@@ -232,6 +253,9 @@ def main():
             load_in_4bit=load_in_4bit,
             hf_token=hf_token,
             hf_private=args.hf_private,
+            max_train_samples=args.max_train_samples,
+            max_eval_samples=args.max_eval_samples,
+            dry_run=args.dry_run,
         )
 
         gc.collect()
@@ -295,6 +319,7 @@ def main():
             output_dir=eval_dir,
             batch_size=args.eval_batch_size,
             data_dir=args.data_dir,
+            max_samples=args.max_eval_samples,
         )
 
         print(f"\nExperiment complete.")
