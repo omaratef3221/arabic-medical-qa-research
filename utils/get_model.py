@@ -76,7 +76,6 @@ def load_model_and_tokenizer(
             dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
-            attn_implementation="flash_attention_2",
         )
 
     if method == "lora":
@@ -141,7 +140,6 @@ def load_from_checkpoint(
                 dtype=torch.bfloat16,
                 device_map="auto",
                 trust_remote_code=True,
-                attn_implementation="flash_attention_2",
             )
         model = PeftModel.from_pretrained(base, checkpoint_path)
     elif method == "full":
@@ -150,7 +148,6 @@ def load_from_checkpoint(
             dtype=torch.bfloat16,
             device_map="auto",
             trust_remote_code=True,
-            attn_implementation="flash_attention_2",
         )
     else:
         raise ValueError(f"method must be 'lora' or 'full', got {method!r}")
