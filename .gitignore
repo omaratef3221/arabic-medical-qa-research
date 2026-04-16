@@ -11,3 +11,8 @@ outputs/
 
 # Wandb local files
 wandb/
+
+# SLURM log files
+slurm/logs/*.out
+slurm/logs/*.err
+.DS_Store

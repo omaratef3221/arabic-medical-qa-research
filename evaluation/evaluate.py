@@ -191,7 +191,7 @@ def evaluate_model(
     preds_path = os.path.join(output_dir, "predictions.csv")
     fieldnames = ["question", "reference", "prediction", "correct", "specialty"]
     with open(preds_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
         writer.writeheader()
         writer.writerows(per_sample_records)
     print(f"Predictions saved to: {preds_path}")
