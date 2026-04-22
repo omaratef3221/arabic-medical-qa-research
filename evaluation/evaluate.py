@@ -15,6 +15,7 @@ import torch
 from datasets import Dataset
 
 from data.read_data import load_medarabench
+from data.clean_data import clean_medarabench
 from utils.prompt_template import format_medarabench_sample
 from utils.metrics import compute_all_metrics, compute_per_specialty_metrics
 from utils import wandb_logger
@@ -221,11 +222,12 @@ def run_evaluation(
     Returns:
         dict with evaluation metrics
     """
-    print("Loading MedAraBench test set...")
-    test_dataset = load_medarabench(split="test", data_dir=data_dir)
+    print("Loading and cleaning MedAraBench test set...")
+    raw_test = load_medarabench(split="test", data_dir=data_dir)
+    test_dataset = clean_medarabench(raw_test)
     if max_samples is not None:
         test_dataset = test_dataset.select(range(min(max_samples, len(test_dataset))))
-    print(f"  Loaded {len(test_dataset):,} test samples")
+    print(f"  Test samples: {len(raw_test):,} raw → {len(test_dataset):,} clean")
 
     return evaluate_model(
         model=model,
