@@ -155,8 +155,8 @@ def run_domain_adaptation(
         optim=train_cfg.get("optimizer", "adamw_torch"),
         max_length=max_seq_length,
         packing=False,
-        report_to="wandb",   # training loss streamed to W&B automatically
-        run_name=None,       # run name already set by init_run() in main.py
+        report_to="wandb",
+        run_name=os.environ.get("WANDB_NAME") or f"{model_name.split('/')[-1].lower()}_s1-{method}_stage1",
     )
 
     trainer = SFTTrainer(

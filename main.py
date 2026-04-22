@@ -155,6 +155,7 @@ def main():
                     run_config[f"lora_{k}"] = v
 
         run_name = _make_run_name(args.model, args.stage1_method, args.stage2_method)
+        os.environ["WANDB_NAME"] = run_name
         tags = [
             args.model.split("/")[-1],
             f"s1_{args.stage1_method}",

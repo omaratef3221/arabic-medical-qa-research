@@ -212,7 +212,7 @@ def run_task_finetuning(
         max_length=max_seq_length,
         packing=False,
         report_to="wandb",
-        run_name=None,
+        run_name=os.environ.get("WANDB_NAME") or f"{model_name.split('/')[-1].lower()}_s1-{stage1_method or 'none'}_s2-{method}",
     )
 
     trainer = SFTTrainer(
