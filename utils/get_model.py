@@ -79,6 +79,8 @@ def load_model_and_tokenizer(
         )
 
     if method == "lora":
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
         cfg = lora_config or {}
         peft_cfg = _build_lora_config(cfg)
         model = get_peft_model(model, peft_cfg)

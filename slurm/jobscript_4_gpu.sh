@@ -9,6 +9,13 @@
 #
 # All experiments use the cleaned MedAraBench data (cleaning is applied in
 # both train/finetuning.py and evaluation/evaluate.py).
+#
+# IMPORTANT (2026-04-23): The Stage 2 loading logic in train/finetuning.py was
+# fixed — previously the LoRA S1 adapter was loaded frozen and no fresh S2
+# adapter was applied, causing grad_norm=0 and no learning. The new logic
+# merges the S1 adapter into the base weights, then applies a fresh trainable
+# S2 adapter. A sanity check verifies trainable params are non-zero before
+# training starts.
 # =============================================================================
 
 #SBATCH --job-name=arabic_med_4gpu
@@ -139,8 +146,8 @@ run_zeroshot_eval () {
 # =============================================================================
 # Exp 4 & 8 — FULL training (both Stage 1 and Stage 2)
 # =============================================================================
-run_full "Exp04" "meta-llama/Llama-3.1-8B"     "full" "lora" "outputs/exp04_llama_full_lora"
-run_full "Exp08" "inceptionai/Jais-2-8B-Chat"  "full" "lora" "outputs/exp08_jais_full_lora"
+# run_full "Exp04" "meta-llama/Llama-3.1-8B"     "full" "lora" "outputs/exp04_llama_full_lora"
+# run_full "Exp08" "inceptionai/Jais-2-8B-Chat"  "full" "lora" "outputs/exp08_jais_full_lora"
 
 # =============================================================================
 # Exps 1, 2, 3, 5, 6, 7 — Stage 2 retrain using existing Stage 1 on HF

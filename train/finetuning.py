@@ -118,9 +118,15 @@ def run_task_finetuning(
 
     # ------------------------------------------------------------------ #
     # Load model depending on Stage 1 / Stage 2 method combination
+    #
+    # CRITICAL: Stage 2 must have trainable parameters. When loading a Stage 1
+    # LoRA checkpoint, the adapter is loaded in inference mode with
+    # requires_grad=False. We must either merge it (if Stage 2 != lora) or
+    # merge+reapply a fresh adapter (if Stage 2 == lora).
     # ------------------------------------------------------------------ #
     if stage1_checkpoint is None:
-        # No Stage 1 — load fresh base model
+        # No Stage 1 — load fresh base model with fresh Stage 2 adapter
+        print("No Stage 1 checkpoint — loading fresh base model.")
         model, tokenizer = load_model_and_tokenizer(
             model_name=model_name,
             method=method,
@@ -128,44 +134,99 @@ def run_task_finetuning(
             load_in_4bit=load_in_4bit,
         )
 
-    elif stage1_method == "lora" and method == "full":
-        # LoRA Stage 1 → Full Stage 2: merge adapter first
-        print("Merging Stage 1 LoRA adapter into base model...")
-        merged_dir = os.path.join(output_dir, "_merged_stage1")
-        os.makedirs(merged_dir, exist_ok=True)
-
-        s1_model, s1_tokenizer = load_from_checkpoint(
+    elif stage1_method == "lora" and method == "lora":
+        # LoRA S1 → LoRA S2: load S1 adapter, MERGE into base, apply fresh LoRA.
+        # Without merge+reapply, the loaded adapter is frozen (requires_grad=False)
+        # and no new trainable parameters are added.
+        print("LoRA S1 → LoRA S2: merging S1 adapter, applying fresh S2 adapter...")
+        s1_model, tokenizer = load_from_checkpoint(
             checkpoint_path=stage1_checkpoint,
             base_model_name=model_name,
             method="lora",
             load_in_4bit=load_in_4bit,
         )
-        model = merge_lora_and_save(s1_model, merged_dir, tokenizer=s1_tokenizer)
-        tokenizer = s1_tokenizer
+        # Merge S1 adapter into base weights, returning a plain causal LM
+        merged_base = s1_model.merge_and_unload()
+        # Required when combining gradient checkpointing + LoRA on a frozen base
+        if hasattr(merged_base, "enable_input_require_grads"):
+            merged_base.enable_input_require_grads()
+        # Apply a fresh trainable LoRA adapter on top of the merged model
+        peft_cfg = _build_lora_config(lora_cfg)
+        model = get_peft_model(merged_base, peft_cfg)
+        model.print_trainable_parameters()
+
+    elif stage1_method == "lora" and method == "full":
+        # LoRA S1 → Full S2: merge adapter, then fine-tune all params.
+        print("LoRA S1 → Full S2: merging S1 adapter, enabling full fine-tune...")
+        merged_dir = os.path.join(output_dir, "_merged_stage1")
+        os.makedirs(merged_dir, exist_ok=True)
+
+        s1_model, tokenizer = load_from_checkpoint(
+            checkpoint_path=stage1_checkpoint,
+            base_model_name=model_name,
+            method="lora",
+            load_in_4bit=load_in_4bit,
+        )
+        model = merge_lora_and_save(s1_model, merged_dir, tokenizer=tokenizer)
         for param in model.parameters():
             param.requires_grad = True
 
     elif stage1_method == "full" and method == "lora":
-        # Full Stage 1 → LoRA Stage 2: load full checkpoint, add fresh LoRA
-        print("Loading Stage 1 full checkpoint and applying fresh LoRA adapter...")
+        # Full S1 → LoRA S2: load full checkpoint, apply fresh LoRA adapter.
+        print("Full S1 → LoRA S2: loading full checkpoint, applying fresh LoRA...")
+        base, tokenizer = load_from_checkpoint(
+            checkpoint_path=stage1_checkpoint,
+            base_model_name=model_name,
+            method="full",
+            load_in_4bit=load_in_4bit,
+        )
+        # Required when combining gradient checkpointing + LoRA on a frozen base
+        if hasattr(base, "enable_input_require_grads"):
+            base.enable_input_require_grads()
+        peft_cfg = _build_lora_config(lora_cfg)
+        model = get_peft_model(base, peft_cfg)
+        model.print_trainable_parameters()
+
+    elif stage1_method == "full" and method == "full":
+        # Full S1 → Full S2: load full checkpoint, ensure all params trainable.
+        print("Full S1 → Full S2: loading full checkpoint, enabling all params...")
         model, tokenizer = load_from_checkpoint(
             checkpoint_path=stage1_checkpoint,
             base_model_name=model_name,
             method="full",
             load_in_4bit=load_in_4bit,
         )
-        peft_cfg = _build_lora_config(lora_cfg)
-        model = get_peft_model(model, peft_cfg)
-        model.print_trainable_parameters()
+        for param in model.parameters():
+            param.requires_grad = True
 
     else:
-        # Same method (lora→lora or full→full): load from checkpoint directly
-        model, tokenizer = load_from_checkpoint(
-            checkpoint_path=stage1_checkpoint,
-            base_model_name=model_name,
-            method=stage1_method,
-            load_in_4bit=load_in_4bit,
+        raise ValueError(
+            f"Unsupported combination: stage1_method={stage1_method!r}, method={method!r}"
         )
+
+    # ------------------------------------------------------------------ #
+    # Sanity check: verify Stage 2 has trainable parameters
+    # ------------------------------------------------------------------ #
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    pct = 100.0 * trainable_params / max(total_params, 1)
+
+    print(f"\n[Stage 2 Sanity Check]")
+    print(f"  Trainable params: {trainable_params:,} ({pct:.2f}%)")
+    print(f"  Total params:     {total_params:,}")
+    print(f"  S1 method: {stage1_method} | S2 method: {method}")
+
+    if method == "lora":
+        assert 0.01 < pct < 10.0, (
+            f"LoRA Stage 2 should have 0.01-10% trainable params, got {pct:.4f}%. "
+            f"Loading path is broken (likely adapter frozen or not applied)."
+        )
+    elif method == "full":
+        assert pct > 99.0, (
+            f"Full Stage 2 should have ~100% trainable params, got {pct:.4f}%. "
+            f"Loading path is broken."
+        )
+    print(f"  Sanity check PASSED\n")
 
     # ------------------------------------------------------------------ #
     # Load, clean, and split MedAraBench training data
@@ -223,6 +284,18 @@ def run_task_finetuning(
         formatting_func=formatting_func,
         processing_class=tokenizer,
         callbacks=[_ValLossCallback(stage="stage2")],
+    )
+
+    # Force optimizer creation so we can inspect it before training starts
+    trainer.create_optimizer()
+    optimizer_params = sum(
+        p.numel()
+        for group in trainer.optimizer.param_groups
+        for p in group["params"]
+    )
+    print(f"  Optimizer tracking: {optimizer_params:,} parameters")
+    assert optimizer_params > 0, (
+        "Optimizer has no parameters to update! Stage 2 training would be a no-op."
     )
 
     # ------------------------------------------------------------------ #
