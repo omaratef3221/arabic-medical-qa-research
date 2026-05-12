@@ -195,23 +195,27 @@ def run_domain_adaptation(
         json.dump(meta, f, indent=2, ensure_ascii=False)
 
     # ------------------------------------------------------------------ #
-    # Upload to HF Hub
+    # Upload to HF Hub (non-fatal — never block subsequent stages on upload failure)
     # ------------------------------------------------------------------ #
     hf_repo_id = None
     resolved_token = hf_token or os.environ.get("HF_TOKEN")
     if resolved_token and not dry_run:
-        from utils.hf_hub import upload_checkpoint_to_hub
-        hf_repo_id = upload_checkpoint_to_hub(
-            checkpoint_dir=output_dir,
-            model_name=model_name,
-            stage="stage1",
-            s1_method=method,
-            s2_method=None,
-            hf_token=resolved_token,
-            private=hf_private,
-            extra_metadata=meta,
-        )
-        wandb_logger.log_hf_repo(hf_repo_id, stage="stage1")
+        try:
+            from utils.hf_hub import upload_checkpoint_to_hub
+            hf_repo_id = upload_checkpoint_to_hub(
+                checkpoint_dir=output_dir,
+                model_name=model_name,
+                stage="stage1",
+                s1_method=method,
+                s2_method=None,
+                hf_token=resolved_token,
+                private=hf_private,
+                extra_metadata=meta,
+            )
+            wandb_logger.log_hf_repo(hf_repo_id, stage="stage1")
+        except Exception as e:
+            print(f"\n[WARNING] HF Hub upload failed: {e}")
+            print("[WARNING] Continuing — local checkpoint is saved at: " + output_dir)
 
     print("Stage 1 complete.")
     return output_dir, hf_repo_id

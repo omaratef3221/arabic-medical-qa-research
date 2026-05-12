@@ -80,10 +80,11 @@ def upload_checkpoint_to_hub(
     # Create repo if it doesn't exist
     create_repo(repo_id, token=token, private=private, exist_ok=True)
 
-    # Write a minimal model card
+    # Always overwrite the README — PEFT auto-writes one with a local path
+    # in `base_model:` which HF rejects with a 400 BadRequest. Our card uses
+    # the proper HF model ID.
     card_path = os.path.join(checkpoint_dir, "README.md")
-    if not os.path.exists(card_path):
-        _write_model_card(card_path, repo_id, model_name, stage, s1_method, s2_method, extra_metadata)
+    _write_model_card(card_path, repo_id, model_name, stage, s1_method, s2_method, extra_metadata)
 
     upload_folder(
         folder_path=checkpoint_dir,
@@ -115,6 +116,7 @@ def _write_model_card(
         "language:",
         "- ar",
         "license: llama3",
+        f"base_model: {model_name}",
         "tags:",
         "- arabic",
         "- medical",
