@@ -189,7 +189,6 @@ Both models load in **bfloat16** with `device_map="auto"`.
 
 - **LoRA:** Loads base model in bf16, applies `PeftModel` with LoRA adapter via `get_peft_model()`. Calls `enable_input_require_grads()` on the base before wrapping (required for gradient checkpointing + LoRA).
 - **Full:** Loads base model in bf16, sets `requires_grad=True` for all parameters.
-- **QLoRA (70B models):** Uses `BitsAndBytesConfig` with NF4 quantization and double quantization.
 
 ### LoRA Configuration
 
@@ -386,15 +385,6 @@ Per-sample predictions are saved to `outputs/{exp}/eval/predictions.csv` with `q
 | 13 | Llama-3.1-8B | None | None | Zero-shot |
 | 14 | Jais-2-8B-Chat | None | None | Zero-shot |
 
-### 70B Scale Ablation (4 total)
-
-| Exp | Model | Stage 1 | Stage 2 | Notes |
-|-----|-------|---------|---------|-------|
-| 15 | Llama-3.1-70B | LoRA | LoRA | QLoRA (4-bit) |
-| 16 | Llama-3.1-70B | None | LoRA | QLoRA baseline |
-| 17 | Jais-2-70B-Chat | LoRA | LoRA | QLoRA (4-bit) |
-| 18 | Jais-2-70B-Chat | None | LoRA | QLoRA baseline |
-
 ---
 
 ## Hyperparameters
@@ -530,7 +520,7 @@ Example: `llama-3.1-8b_s1-lora_s2-lora`
 
 The run name is set both via `wandb.init(name=...)` AND `os.environ["WANDB_NAME"]` AND `SFTConfig.run_name=...` to prevent the trainer from overriding with a random name (e.g., "crashed-deep-yogurt"). All three layers must agree.
 
-**Tags:** Model name, stage 1 method, stage 2 method, model size (8b/70b).
+**Tags:** Model name, stage 1 method, stage 2 method, model size.
 
 ### HuggingFace Hub (`utils/hf_hub.py`)
 
@@ -559,12 +549,12 @@ Loaded automatically by `utils/env_loader.py` at pipeline startup. Environment v
 
 ### Hardware
 
-| Resource | 8B Experiments | 70B Experiments |
-|----------|---------------|-----------------|
-| **GPU** | 1× or 4× NVIDIA A10G (24 GB) | 4× NVIDIA A10G or 8× A100 |
-| **Instance** | AWS g5.12xlarge | AWS g5.12xlarge / p4d.24xlarge |
-| **CPU** | 8–24 cores per job | 24+ cores per job |
-| **Memory** | 60–180 GB RAM | 180+ GB RAM |
+| Resource | Value |
+|----------|-------|
+| **GPU** | 1× or 4× NVIDIA A10G (24 GB) |
+| **Instance** | AWS g5.12xlarge |
+| **CPU** | 8–24 cores per job |
+| **Memory** | 60–180 GB RAM |
 
 ### SLURM Partitions (AWS ParallelCluster)
 
