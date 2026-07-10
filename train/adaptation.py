@@ -22,9 +22,16 @@ from utils.prompt_template import format_aramed_sample
 from utils import wandb_logger
 
 
-def _load_config(config_path: str) -> dict:
+def _load_config(config_path: str, overrides: dict | None = None) -> dict:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+    # Revision sweeps: shallow-merge per-section overrides onto the YAML config
+    for section in ("training", "lora"):
+        if overrides and section in overrides:
+            cfg.setdefault(section, {}).update(overrides[section])
+    if overrides and "num_train_epochs" in overrides:
+        for stage in cfg.get("stages", {}).values():
+            stage["num_train_epochs"] = overrides["num_train_epochs"]
     # PyYAML parses scientific notation (e.g. 2e-4) as strings — cast floats explicitly
     train = cfg.get("training", {})
     for key in ("learning_rate", "warmup_ratio", "weight_decay"):
@@ -67,6 +74,8 @@ def run_domain_adaptation(
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
     dry_run: bool = False,
+    overrides: dict | None = None,
+    num_epochs_override: int | None = None,
 ):
     """
     Run Stage 1 domain adaptation on AraMed.
@@ -84,11 +93,15 @@ def run_domain_adaptation(
         val_split:         fraction of training data to use for validation loss tracking
         max_train_samples: cap training set size (for dry-run / smoke tests)
         max_eval_samples:  cap validation set size (for dry-run / smoke tests)
-        dry_run:           if True: force 1 epoch, fp32, skip HF upload
+        dry_run:              if True: force 1 epoch, fp32, skip HF upload
+        overrides:            optional config overrides (see finetuning.py)
+        num_epochs_override:  Stage-1-specific epoch count (multi-epoch ablation)
     """
-    cfg = _load_config(config_path)
+    cfg = _load_config(config_path, overrides=overrides)
     train_cfg = cfg["training"]
-    num_epochs = 1 if dry_run else cfg["stages"]["domain_adaptation"]["num_train_epochs"]
+    num_epochs = 1 if dry_run else (
+        num_epochs_override or cfg["stages"]["domain_adaptation"]["num_train_epochs"]
+    )
     max_seq_length = train_cfg.get("max_seq_length", 2048)
     lora_cfg = cfg.get("lora", {})
     use_bf16 = train_cfg.get("bf16", True) and not dry_run

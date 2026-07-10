@@ -51,8 +51,36 @@ def _is_70b(model_name: str) -> bool:
 
 
 def _make_run_name(model_name: str, stage1_method: str, stage2_method: str) -> str:
-    short = model_name.split("/")[-1].lower()
-    return f"{short}_s1-{stage1_method}_s2-{stage2_method}"
+    from utils.model_registry import short_name_for
+    return f"{short_name_for(model_name)}_s1-{stage1_method}_s2-{stage2_method}"
+
+
+def _build_overrides(args) -> dict | None:
+    """Collect CLI hyperparameter overrides into the dict consumed by the
+    training scripts' _load_config (revision sweeps: rank/lr/dropout/seed/QLoRA)."""
+    training: dict = {}
+    lora: dict = {}
+    if args.seed is not None:
+        training["seed"] = args.seed
+    if args.learning_rate is not None:
+        training["learning_rate"] = args.learning_rate
+    if args.qlora:
+        training["optimizer"] = "paged_adamw_8bit"
+    if args.lora_r is not None:
+        lora["r"] = args.lora_r
+    if args.lora_alpha is not None:
+        lora["lora_alpha"] = args.lora_alpha
+    if args.lora_dropout is not None:
+        lora["lora_dropout"] = args.lora_dropout
+    if args.lora_target_modules:
+        lora["target_modules"] = [m.strip() for m in args.lora_target_modules.split(",")]
+
+    overrides: dict = {}
+    if training:
+        overrides["training"] = training
+    if lora:
+        overrides["lora"] = lora
+    return overrides or None
 
 
 def parse_args():
@@ -92,6 +120,36 @@ def parse_args():
         help="Make HF Hub repos private. "
              "Upload is automatic when HF_TOKEN is set in .env or environment.")
 
+    # Revision R1: run naming, tags, and hyperparameter overrides
+    parser.add_argument("--run_name", default=None,
+        help="Override the derived W&B run name "
+             "(e.g. llama-3.1-8b_s1-none_s2-lora_r64 or ..._seed1337).")
+    parser.add_argument("--wandb_tags", default=None,
+        help="Comma-separated extra W&B tags (e.g. 'revision-r1').")
+    parser.add_argument("--seed", type=int, default=None,
+        help="Override the training seed (default: from YAML config, 42).")
+    parser.add_argument("--learning_rate", type=float, default=None,
+        help="Override the learning rate from the YAML config.")
+    parser.add_argument("--lora_r", type=int, default=None,
+        help="Override LoRA rank r.")
+    parser.add_argument("--lora_alpha", type=int, default=None,
+        help="Override LoRA alpha (convention: alpha = 2r).")
+    parser.add_argument("--lora_dropout", type=float, default=None,
+        help="Override LoRA dropout.")
+    parser.add_argument("--lora_target_modules", default=None,
+        help="Comma-separated LoRA target modules "
+             "(e.g. 'q_proj,k_proj,v_proj,o_proj' for attention-only).")
+    parser.add_argument("--qlora", action="store_true",
+        help="QLoRA: NF4 4-bit quantized base (double quantization) + LoRA "
+             "adapters + paged 8-bit AdamW. Use with --stage2_method lora.")
+    parser.add_argument("--stage1_epochs", type=int, default=None,
+        help="Override Stage 1 epoch count (multi-epoch ablation).")
+    parser.add_argument("--stage2_epochs", type=int, default=None,
+        help="Override Stage 2 epoch count.")
+    parser.add_argument("--predictions_dir", default=None,
+        help="Directory for per-sample prediction parquet files "
+             "(default: <project>/predictions).")
+
     # Dry-run / local testing
     parser.add_argument("--max_train_samples", type=int, default=None,
         help="Truncate training data to this many samples. "
@@ -118,7 +176,15 @@ def main():
         args.no_wandb = True
         print("Dry-run mode: max_train_samples=100, max_eval_samples=50, W&B disabled, bf16 disabled, 1 epoch")
 
-    load_in_4bit = _is_70b(args.model) and not args.dry_run
+    load_in_4bit = (_is_70b(args.model) or args.qlora) and not args.dry_run
+    overrides = _build_overrides(args)
+    run_name = args.run_name or _make_run_name(
+        args.model, args.stage1_method, args.stage2_method
+    )
+    os.environ["WANDB_NAME"] = run_name
+
+    from utils.model_registry import get_spec
+    model_spec = get_spec(args.model)
 
     # ------------------------------------------------------------------
     # Resolve credentials from env (already loaded from .env)
@@ -141,7 +207,17 @@ def main():
             "stage2_method": args.stage2_method,
             "output_dir": args.output_dir,
             "load_in_4bit": load_in_4bit,
+            "qlora": args.qlora,
+            "seed": args.seed if args.seed is not None else 42,
         }
+        if overrides:
+            for section, vals in overrides.items():
+                for k, v in vals.items():
+                    run_config[f"override_{section}_{k}"] = str(v)
+        if args.stage1_epochs is not None:
+            run_config["stage1_epochs"] = args.stage1_epochs
+        if args.stage2_epochs is not None:
+            run_config["stage2_epochs"] = args.stage2_epochs
         # Merge hyperparameters from both configs
         for method in {args.stage1_method, args.stage2_method} - {"none"}:
             cfg_path = _config_path_for(method, script_dir)
@@ -154,14 +230,16 @@ def main():
                 for k, v in cfg["lora"].items():
                     run_config[f"lora_{k}"] = v
 
-        run_name = _make_run_name(args.model, args.stage1_method, args.stage2_method)
-        os.environ["WANDB_NAME"] = run_name
         tags = [
             args.model.split("/")[-1],
             f"s1_{args.stage1_method}",
             f"s2_{args.stage2_method}",
-            "70b" if load_in_4bit else "8b",
+            "70b" if _is_70b(args.model) else "8b",
         ]
+        if args.qlora:
+            tags.append("qlora")
+        if args.wandb_tags:
+            tags.extend(t.strip() for t in args.wandb_tags.split(",") if t.strip())
 
         wandb_logger.init_run(
             project=wandb_project,
@@ -226,6 +304,8 @@ def main():
             max_train_samples=args.max_train_samples,
             max_eval_samples=args.max_eval_samples,
             dry_run=args.dry_run,
+            overrides=overrides,
+            num_epochs_override=args.stage1_epochs,
         )
 
         gc.collect()
@@ -243,6 +323,10 @@ def main():
         s2_config = _config_path_for(args.stage2_method, script_dir)
         os.makedirs(stage2_dir, exist_ok=True)
 
+        s2_overrides = dict(overrides) if overrides else {}
+        if args.stage2_epochs is not None:
+            s2_overrides["num_train_epochs"] = args.stage2_epochs
+
         stage2_checkpoint, _ = run_task_finetuning(
             model_name=args.model,
             method=args.stage2_method,
@@ -257,6 +341,7 @@ def main():
             max_train_samples=args.max_train_samples,
             max_eval_samples=args.max_eval_samples,
             dry_run=args.dry_run,
+            overrides=s2_overrides or None,
         )
 
         gc.collect()
@@ -296,7 +381,7 @@ def main():
                 method=args.stage1_method,
                 load_in_4bit=load_in_4bit,
             )
-            if args.stage1_method == "lora":
+            if args.stage1_method == "lora" and not args.qlora:
                 merged_dir = os.path.join(eval_dir, "_merged")
                 model = merge_lora_and_save(model, merged_dir, tokenizer)
 
@@ -310,7 +395,9 @@ def main():
                 method=eval_method,
                 load_in_4bit=load_in_4bit,
             )
-            if eval_method == "lora":
+            # QLoRA adapters cannot be merged into a 4-bit base without
+            # dequantization artefacts — evaluate with the adapter attached.
+            if eval_method == "lora" and not args.qlora:
                 merged_dir = os.path.join(eval_dir, "_merged")
                 model = merge_lora_and_save(model, merged_dir, tokenizer)
 
@@ -321,6 +408,9 @@ def main():
             batch_size=args.eval_batch_size,
             data_dir=args.data_dir,
             max_samples=args.max_eval_samples,
+            run_name=run_name,
+            predictions_dir=args.predictions_dir,
+            model_spec=model_spec,
         )
 
         print(f"\nExperiment complete.")

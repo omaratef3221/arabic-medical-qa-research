@@ -5,7 +5,10 @@ from peft import (
     TaskType,
     get_peft_model,
     PeftModel,
+    prepare_model_for_kbit_training,
 )
+
+from utils.model_registry import get_spec, configure_tokenizer as _registry_configure_tokenizer
 
 
 def _build_lora_config(lora_cfg: dict) -> LoraConfig:
@@ -23,13 +26,59 @@ def _build_lora_config(lora_cfg: dict) -> LoraConfig:
     )
 
 
-def _configure_tokenizer(tokenizer):
+def _configure_tokenizer(tokenizer, model_name: str | None = None):
     """Ensure tokenizer has a pad token and right-padding for training."""
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        tokenizer.pad_token_id = tokenizer.eos_token_id
-    tokenizer.padding_side = "right"
-    return tokenizer
+    spec = get_spec(model_name or tokenizer.name_or_path)
+    return _registry_configure_tokenizer(tokenizer, spec)
+
+
+def _nf4_config() -> BitsAndBytesConfig:
+    """QLoRA quantization: NF4 4-bit with double quantization (Dettmers 2023)."""
+    return BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16,
+    )
+
+
+def _from_pretrained_kwargs(model_name: str, load_in_4bit: bool) -> dict:
+    """Assemble AutoModelForCausalLM.from_pretrained kwargs from the registry."""
+    spec = get_spec(model_name)
+    kwargs = {
+        "device_map": "auto",
+        "trust_remote_code": spec.trust_remote_code,
+    }
+    if spec.attn_implementation:
+        # e.g. Gemma-2 (SILMA): logit soft-capping is skipped by flash/sdpa
+        kwargs["attn_implementation"] = spec.attn_implementation
+    if load_in_4bit:
+        kwargs["quantization_config"] = _nf4_config()
+    else:
+        kwargs["dtype"] = torch.bfloat16
+    return kwargs
+
+
+def count_trainable_parameters(model) -> tuple[int, int, float]:
+    """
+    Return (trainable, total, percent) with correct handling of 4-bit
+    quantized weights, whose Params4bit tensors report packed (halved)
+    element counts. PEFT's counter compensates for this; fall back to a
+    manual count that applies the same correction.
+    """
+    if hasattr(model, "get_nb_trainable_parameters"):
+        trainable, total = model.get_nb_trainable_parameters()
+    else:
+        trainable, total = 0, 0
+        for p in model.parameters():
+            numel = p.numel()
+            if p.__class__.__name__ == "Params4bit":
+                numel = numel * 2  # packed 4-bit: 2 weights per int8 element
+            total += numel
+            if p.requires_grad:
+                trainable += numel
+    pct = 100.0 * trainable / max(total, 1)
+    return trainable, total, pct
 
 
 def load_model_and_tokenizer(
@@ -53,32 +102,21 @@ def load_model_and_tokenizer(
     Returns:
         (model, tokenizer)
     """
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer = _configure_tokenizer(tokenizer)
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name, trust_remote_code=get_spec(model_name).trust_remote_code
+    )
+    tokenizer = _configure_tokenizer(tokenizer, model_name)
 
-    # Quantization config for QLoRA
-    if load_in_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True,
-        )
-    else:
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name, **_from_pretrained_kwargs(model_name, load_in_4bit)
+    )
 
     if method == "lora":
+        if load_in_4bit:
+            # QLoRA: cast norms/embeddings, enable input grads for checkpointing
+            model = prepare_model_for_kbit_training(
+                model, use_gradient_checkpointing=True
+            )
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         cfg = lora_config or {}
@@ -120,37 +158,19 @@ def load_from_checkpoint(
     tokenizer = AutoTokenizer.from_pretrained(
         checkpoint_path, trust_remote_code=True
     )
-    tokenizer = _configure_tokenizer(tokenizer)
+    tokenizer = _configure_tokenizer(tokenizer, base_model_name)
 
     if method == "lora":
-        if load_in_4bit:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-            )
-            base = AutoModelForCausalLM.from_pretrained(
-                base_model_name,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-            )
-        else:
-            base = AutoModelForCausalLM.from_pretrained(
-                base_model_name,
-                dtype=torch.bfloat16,
-                device_map="auto",
-                trust_remote_code=True,
-            )
+        base = AutoModelForCausalLM.from_pretrained(
+            base_model_name, **_from_pretrained_kwargs(base_model_name, load_in_4bit)
+        )
         model = PeftModel.from_pretrained(base, checkpoint_path)
     elif method == "full":
-        model = AutoModelForCausalLM.from_pretrained(
-            checkpoint_path,
-            dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-        )
+        # Full checkpoints inherit the base model's loading quirks
+        # (e.g. eager attention for Gemma-2) via the registry lookup.
+        kwargs = _from_pretrained_kwargs(base_model_name, load_in_4bit=False)
+        kwargs["trust_remote_code"] = True  # checkpoint may carry remote code
+        model = AutoModelForCausalLM.from_pretrained(checkpoint_path, **kwargs)
     else:
         raise ValueError(f"method must be 'lora' or 'full', got {method!r}")
 

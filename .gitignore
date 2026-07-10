@@ -1,10 +1,13 @@
 Files/datasets/.DS_Store
-*.csv
+Files/datasets/**/*.csv
 *.pyc
 *__pycache__
 
 # Credentials — never commit
 .env
+# Cluster quick-start email export — contains the HPC account password
+run guide.pdf
+*.pdf
 
 # Model outputs
 outputs/

@@ -70,8 +70,16 @@ def load_medarabench(split="train", data_dir="Files/datasets/"):
     path = os.path.join(data_dir, "MedAraBench", filename)
     df = _read_csv_robust(path)
 
+    # Stable per-sample identifier for prediction files / statistical tests.
+    # 'Question Number' is unique in Test.csv; fall back to row position.
+    if "Question Number" in df.columns and df["Question Number"].is_unique:
+        df["question_id"] = df["Question Number"]
+    else:
+        df["question_id"] = range(len(df))
+
     # Keep only relevant columns
     keep_cols = [
+        "question_id",
         "Question", "Option A", "Option B", "Option C", "Option D", "Option E",
         "Correct Answer", "Medical Specialty", "umbrella_specialty", "Level", "Group",
     ]

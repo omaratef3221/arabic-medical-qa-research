@@ -28,15 +28,24 @@ from utils.get_model import (
     load_model_and_tokenizer,
     load_from_checkpoint,
     merge_lora_and_save,
+    count_trainable_parameters,
     _build_lora_config,
 )
 from utils.prompt_template import format_medarabench_sample
 from utils import wandb_logger
 
 
-def _load_config(config_path: str) -> dict:
+def _load_config(config_path: str, overrides: dict | None = None) -> dict:
     with open(config_path) as f:
         cfg = yaml.safe_load(f)
+    # Revision sweeps: shallow-merge per-section overrides onto the YAML config
+    # (e.g. {"training": {"learning_rate": 1e-4}, "lora": {"r": 64}})
+    for section in ("training", "lora"):
+        if overrides and section in overrides:
+            cfg.setdefault(section, {}).update(overrides[section])
+    if overrides and "num_train_epochs" in overrides:
+        for stage in cfg.get("stages", {}).values():
+            stage["num_train_epochs"] = overrides["num_train_epochs"]
     # PyYAML parses scientific notation (e.g. 2e-4) as strings — cast floats explicitly
     train = cfg.get("training", {})
     for key in ("learning_rate", "warmup_ratio", "weight_decay"):
@@ -76,6 +85,7 @@ def run_task_finetuning(
     max_train_samples: int | None = None,
     max_eval_samples: int | None = None,
     dry_run: bool = False,
+    overrides: dict | None = None,
 ):
     """
     Run Stage 2 task-specific fine-tuning on MedAraBench.
@@ -96,8 +106,11 @@ def run_task_finetuning(
         max_train_samples: cap training set size (for dry-run / smoke tests)
         max_eval_samples:  cap validation set size (for dry-run / smoke tests)
         dry_run:           if True: force 1 epoch, fp32, skip HF upload
+        overrides:         optional config overrides for revision sweeps, e.g.
+                           {"training": {"learning_rate": 1e-4, "seed": 1337},
+                            "lora": {"r": 64, "lora_alpha": 128}}
     """
-    cfg = _load_config(config_path)
+    cfg = _load_config(config_path, overrides=overrides)
     train_cfg = cfg["training"]
     num_epochs = 1 if dry_run else cfg["stages"]["task_specific"]["num_train_epochs"]
     max_seq_length = train_cfg.get("max_seq_length", 2048)
@@ -206,10 +219,9 @@ def run_task_finetuning(
 
     # ------------------------------------------------------------------ #
     # Sanity check: verify Stage 2 has trainable parameters
+    # (count_trainable_parameters handles 4-bit/QLoRA packed weights)
     # ------------------------------------------------------------------ #
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    pct = 100.0 * trainable_params / max(total_params, 1)
+    trainable_params, total_params, pct = count_trainable_parameters(model)
 
     print(f"\n[Stage 2 Sanity Check]")
     print(f"  Trainable params: {trainable_params:,} ({pct:.2f}%)")
