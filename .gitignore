@@ -8,6 +8,10 @@ Files/datasets/**/*.csv
 # Cluster quick-start email export — contains the HPC account password
 run guide.pdf
 *.pdf
+*.csv
+*.parquet
+*.png
+
 
 # Model outputs
 outputs/

@@ -13,7 +13,14 @@
       "Bash(python3 scripts/reinfer_all.py --dry-run)",
       "Bash(python3 scripts/run_revision.py --phase all --dry-run)",
       "Bash(find \"/Users/omaratef/Library/CloudStorage/OneDrive-UniversityofSharjah/Research 2026/Arabic Medical LLM Fine-tuning\" -iname \"*guide*\" -o -iname \"*run*guide*\" 2>/dev/null | head -10)",
-      "Read(//Users/omaratef/Library/CloudStorage/OneDrive-UniversityofSharjah/Research 2026/Arabic Medical LLM Fine-tuning/**)"
+      "Read(//Users/omaratef/Library/CloudStorage/OneDrive-UniversityofSharjah/Research 2026/Arabic Medical LLM Fine-tuning/**)",
+      "Bash(ssh -o BatchMode=yes -o ConnectTimeout=15 oelgendy@44.210.222.21 'echo SSH-OK && squeue -u oelgendy 2>/dev/null | tail -n +2 | wc -l')",
+      "Read(//Users/omaratef/**)",
+      "Bash(P=\"/Users/omaratef/Library/CloudStorage/OneDrive-UniversityofSharjah/Research 2026/Arabic Medical LLM Fine-tuning\"; echo \"=== parent results/:\"; ls -laT \"$P/results\" 2>/dev/null | head -15; echo \"=== script/results/:\"; ls -laT \"$P/script/results\" 2>/dev/null | head -15)",
+      "Read(//Users/omaratef/Library/CloudStorage/OneDrive-UniversityofSharjah/Research 2026/Arabic Medical LLM Fine-tuning/results/**)",
+      "Bash(python3 scripts/stats.py)",
+      "Bash(python3 scripts/breakdowns.py)",
+      "Bash(python3 scripts/make_paper_tables.py --skip-recompute)"
     ],
     "additionalDirectories": [
       "/tmp",
